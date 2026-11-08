@@ -2,8 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tauri::api::process::{Command, CommandEvent};
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DownloadResponse {
@@ -12,7 +12,7 @@ pub struct DownloadResponse {
     pub path: Option<String>,
 }
 
-/// Comando de Tauri invocado desde la interfaz en React / JS
+/// Comando de Tauri v2 invocado desde la interfaz en React / JS
 /// Ejecuta el binario sidecar 'yt-dlp' extrayendo cookies de Chrome y descargando en SD (360p)
 #[tauri::command]
 async fn download_facebook_video(
@@ -27,13 +27,9 @@ async fn download_facebook_video(
         "No se pudo determinar la carpeta de Descargas (~/Downloads) del sistema.".to_string()
     })?;
 
-    // Plantilla de salida para la descarga
+    // Plantilla de salida para la descarga en ~/Downloads
     let output_template = format!("{}/%(title)s_SD.%(ext)s", downloads_dir.to_string_lossy());
 
-    // Argumentos para yt-dlp:
-    // 1. --cookies-from-browser: Extrae sesión activa de Chrome para videos privados
-    // 2. -f / --format: Fuerza la resolución más baja (≤ 360p SD)
-    // 3. -o: Guarda directamente en ~/Downloads
     let args = vec![
         "--cookies-from-browser".to_string(),
         target_browser,
@@ -46,24 +42,30 @@ async fn download_facebook_video(
         url.clone(),
     ];
 
-    // Invocar el sidecar de yt-dlp registrado en tauri.conf.json
-    let (mut rx, _child) = Command::new_sidecar("yt-dlp")
+    // En Tauri v2 se utiliza app_handle.shell().sidecar("yt-dlp")
+    let sidecar_command = app_handle
+        .shell()
+        .sidecar("yt-dlp")
         .map_err(|e| format!("Error al inicializar el binario sidecar yt-dlp: {}", e))?
-        .args(args)
+        .args(args);
+
+    let (mut rx, _child) = sidecar_command
         .spawn()
         .map_err(|e| format!("Error al ejecutar el sidecar yt-dlp: {}", e))?;
 
     let mut log_output = String::new();
 
-    // Monitorizar la salida estándar y de errores del proceso sidecar
+    // Leer eventos asíncronos del proceso sidecar
     while let Some(event) = rx.recv().await {
         match event {
             CommandEvent::Stdout(line) => {
-                log_output.push_str(&line);
+                let text = String::from_utf8_lossy(&line);
+                log_output.push_str(&text);
                 log_output.push('\n');
             }
             CommandEvent::Stderr(line) => {
-                log_output.push_str(&line);
+                let text = String::from_utf8_lossy(&line);
+                log_output.push_str(&text);
                 log_output.push('\n');
             }
             CommandEvent::Terminated(payload) => {
@@ -93,7 +95,8 @@ async fn download_facebook_video(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![download_facebook_video])
         .run(tauri::generate_context!())
-        .expect("Error inesperado al arrancar la aplicación Tauri");
+        .expect("Error al iniciar la aplicación Tauri v2");
 }

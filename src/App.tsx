@@ -27,8 +27,8 @@ const RUST_MAIN_RS = `// src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tauri::api::process::{Command, CommandEvent};
+use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::ShellExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DownloadResponse {
@@ -37,7 +37,7 @@ pub struct DownloadResponse {
     pub path: Option<String>,
 }
 
-/// Comando de Tauri invocado desde la interfaz en React / JS
+/// Comando de Tauri v2 invocado desde la interfaz en React / JS
 /// Ejecuta el binario sidecar 'yt-dlp' extrayendo cookies de Chrome y descargando en SD (360p)
 #[tauri::command]
 async fn download_facebook_video(
@@ -55,10 +55,6 @@ async fn download_facebook_video(
     // Plantilla de salida para la descarga
     let output_template = format!("{}/%(title)s_SD.%(ext)s", downloads_dir.to_string_lossy());
 
-    // Argumentos obligatorios para yt-dlp:
-    // 1. --cookies-from-browser: Extrae cookies de Chrome sin exportar cookies.txt manualmente
-    // 2. -f / --format: Fuerza resolución SD más baja (≤ 360p)
-    // 3. -o: Guarda en ~/Downloads
     let args = vec![
         "--cookies-from-browser".to_string(),
         target_browser,
@@ -71,24 +67,29 @@ async fn download_facebook_video(
         url.clone(),
     ];
 
-    // Invocar el sidecar de yt-dlp registrado en tauri.conf.json
-    let (mut rx, _child) = Command::new_sidecar("yt-dlp")
+    // En Tauri v2 se usa app_handle.shell().sidecar("yt-dlp")
+    let sidecar_command = app_handle
+        .shell()
+        .sidecar("yt-dlp")
         .map_err(|e| format!("Error al inicializar el binario sidecar yt-dlp: {}", e))?
-        .args(args)
+        .args(args);
+
+    let (mut rx, _child) = sidecar_command
         .spawn()
         .map_err(|e| format!("Error al ejecutar el sidecar yt-dlp: {}", e))?;
 
     let mut log_output = String::new();
 
-    // Monitorizar la salida estándar y de errores del proceso sidecar
     while let Some(event) = rx.recv().await {
         match event {
             CommandEvent::Stdout(line) => {
-                log_output.push_str(&line);
+                let text = String::from_utf8_lossy(&line);
+                log_output.push_str(&text);
                 log_output.push('\\n');
             }
             CommandEvent::Stderr(line) => {
-                log_output.push_str(&line);
+                let text = String::from_utf8_lossy(&line);
+                log_output.push_str(&text);
                 log_output.push('\\n');
             }
             CommandEvent::Terminated(payload) => {
@@ -118,81 +119,71 @@ async fn download_facebook_video(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![download_facebook_video])
         .run(tauri::generate_context!())
-        .expect("Error inesperado al arrancar la aplicación Tauri");
+        .expect("Error al iniciar la aplicación Tauri v2");
 }
 `;
 
 const TAURI_CONF_JSON = `{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FBDownloaderMac",
+  "version": "1.0.0",
+  "identifier": "com.fbdownloader.mac",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:3000",
-    "distDir": "../dist"
+    "devUrl": "http://localhost:3000",
+    "frontendDist": "../dist"
   },
-  "package": {
-    "productName": "FBDownloaderMac",
-    "version": "1.0.0"
-  },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "shell": {
-        "all": false,
-        "execute": true,
-        "sidecar": true,
-        "open": true,
-        "scope": [
-          {
-            "name": "binaries/yt-dlp",
-            "sidecar": true,
-            "args": true
-          }
-        ]
-      }
-    },
-    "bundle": {
-      "active": true,
-      "category": "Utility",
-      "copyright": "Copyright © 2026",
-      "externalBin": [
-        "binaries/yt-dlp"
-      ],
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.png"
-      ],
-      "identifier": "com.fbdownloader.mac",
-      "targets": ["dmg", "app"]
-    },
+  "app": {
     "windows": [
       {
-        "fullscreen": false,
+        "title": "Descargador de Facebook - macOS (Tauri v2)",
+        "width": 640,
         "height": 450,
-        "resizable": true,
-        "title": "Descargador de Facebook - macOS (Tauri + Rust)",
-        "width": 640
+        "resizable": true
       }
-    ]
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Utility",
+    "copyright": "Copyright © 2026",
+    "externalBin": [
+      "binaries/yt-dlp"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns"
+    ],
+    "targets": ["dmg", "app"]
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
   }
 }`;
 
 const CARGO_TOML = `[package]
 name = "fb-downloader-mac"
 version = "1.0.0"
-description = "Descargador nativo de videos de Facebook para macOS con Tauri y yt-dlp"
+description = "Descargador nativo de videos de Facebook para macOS con Tauri v2 y yt-dlp"
 authors = ["Desarrollador macOS"]
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "1.5", features = [] }
+tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "1.5", features = ["shell-execute", "shell-open", "api-all"] }
+tauri = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "5.0"
