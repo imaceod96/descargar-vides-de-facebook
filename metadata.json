@@ -1,0 +1,6 @@
+{
+  "name": "Descargador de Videos de Facebook (macOS / Python)",
+  "description": "Aplicación de escritorio completa en Python con GUI Tkinter y yt-dlp para descargar videos públicos y privados en macOS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
